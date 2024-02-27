@@ -1,15 +1,21 @@
 package main
 
 import (
-	"fmt"
-	"html"
+	"encoding/json"
 	"net/http"
 
-	"github.com/chmike/securecookie"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 )
+
+type User struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+const USERNAME = "yasar"
+const PASSWORD = "abcde"
 
 func main() {
 	r := chi.NewRouter()
@@ -17,25 +23,48 @@ func main() {
 	r.Use(CORS)
 	r.Use(middleware.Logger)
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := CreateCookie(key)
+	r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
+		var u User
+		err := json.NewDecoder(r.Body).Decode(&u)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := cookie.SetValue(w, []byte("Hello World!")); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		val, err := cookie.GetValue(nil, r)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		if u.Username == "" || u.Password == "" {
+			http.Error(w, "username and password can't be empty", http.StatusUnauthorized)
 			return
 		}
-		fmt.Println(html.EscapeString(string(val)))
-		w.Write([]byte("Hiiii"))
+
+		if u.Username != USERNAME || u.Password != PASSWORD {
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		value := "user-logged-in"
+
+		cookie := &http.Cookie{
+			Name:     "session",
+			Value:    value,
+			Secure:   false,
+			HttpOnly: true,
+			SameSite: http.SameSiteNoneMode,
+			MaxAge:   60 * 60 * 24,
+		}
+
+		http.SetCookie(w, cookie)
+
+		w.Write([]byte("logged in"))
+
 	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(AuthMiddleware)
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("You can view this page because you are logged in"))
+		})
+	})
+
 	http.ListenAndServe(":8000", r)
 }
 
@@ -49,18 +78,20 @@ var CORS = cors.Handler(cors.Options{
 	MaxAge:           300,
 })
 
-var key []byte = securecookie.MustGenerateRandomKey()
+func AuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
-func CreateCookie(key []byte) (*securecookie.Obj, error) {
-	cookie, err := securecookie.New("session", key, securecookie.Params{
-		Path:     "/",
-		MaxAge:   3600,
-		HTTPOnly: true,
-		Secure:   false,
-		SameSite: securecookie.None,
+		cookie, err := r.Cookie("session")
+		if err != nil {
+			http.Error(w, "no cookie", http.StatusUnauthorized)
+			return
+		}
+
+		if cookie.Value != "user-logged-in" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, nil)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return cookie, nil
 }
